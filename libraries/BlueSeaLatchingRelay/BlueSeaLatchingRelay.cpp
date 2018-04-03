@@ -4,16 +4,16 @@
   Released into the public domain.
 */
 
-#include "Relay.h"
+#include "BlueSeaLatchingRelay.h"
 
 /**
  * Constructor
  */
-Relay::Relay() {
+BlueSeaLatchingRelay::BlueSeaLatchingRelay() {
     Serial.println(this->state);
 }
 
-void Relay::setClosed() {
+void BlueSeaLatchingRelay::setClosed() {
     if(this->getState() != 1) {
         analogWrite(this->closePin, 255);
         Serial.print(this->name);
@@ -27,7 +27,7 @@ void Relay::setClosed() {
 }
 
 
-void Relay::setOpened() {
+void BlueSeaLatchingRelay::setOpened() {
     Serial.print(this->name);
     Serial.print(" set opened ");
     Serial.println(this->state);
@@ -44,7 +44,7 @@ void Relay::setOpened() {
     }
 }
 
-byte Relay::getState() {
+byte BlueSeaLatchingRelay::getState() {
     return this->state;
 }
 

@@ -1,18 +1,18 @@
 /*
-  Relay.h - Library for controlling Latching Relays on a Marine or Home battery system.
+  BlueSeaLatchingRelay.h - Library for controlling Latching Relays on a Marine or Home battery system.
   Created by Clément Lambert, 6th march 2018.
   Released into the public domain.
 */
 
-#ifndef RELAY_H
-#define RELAY_H
+#ifndef BlueSeaLatchingRelay_H
+#define BlueSeaLatchingRelay_H
 
 #include "Arduino.h"
 
-class Relay {
+class BlueSeaLatchingRelay {
   
   public :
-    Relay();
+    BlueSeaLatchingRelay();
     byte state = 22;
     byte openPin;
     byte closePin;

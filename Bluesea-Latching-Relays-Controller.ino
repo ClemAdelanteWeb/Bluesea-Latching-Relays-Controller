@@ -1,6 +1,6 @@
 #include <SoftwareSerial.h>;
 #include <Thread.h>;
-#include <Relay.h>
+#include <BlueSeaLatchingRelay.h>
  
 //------
 // SETTINGS
@@ -53,8 +53,8 @@ const byte BuzzerPin = 12;
 SoftwareSerial Bmv(BmvRxPin,BmvTxPin); // RX, TX
 Thread RunApplication = Thread();
 
-Relay LoadRelay;
-Relay ChargeRelay;
+BlueSeaLatchingRelay LoadRelay;
+BlueSeaLatchingRelay ChargeRelay;
 
 const byte buffsize = 32; 
 const char EOPmarker = '\n'; //This is the end of packet marker
