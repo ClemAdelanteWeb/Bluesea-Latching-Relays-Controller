@@ -17,12 +17,18 @@ void BlueSeaLatchingRelay::setClosed() {
 	this->isReadyToOpen = 0;
 
     if(this->getState() != BlueSeaLatchingRelay::RELAY_CLOSE) {
+    
         analogWrite(this->closePin, 255);
+        
         Serial.print(this->name);
         Serial.println(F(" closing"));
+        
         delay(latchingDurationTime);
+        
         analogWrite(this->closePin, 0);
         
+        // delay to be sure that 2 relays can't be activated at the same time (causing fuse blow)
+        delay(800);
              
         if(this->getState() == BlueSeaLatchingRelay::RELAY_CLOSE) {
         	Serial.println(F("R. closed"));
@@ -36,18 +42,20 @@ void BlueSeaLatchingRelay::setClosed() {
 
 
 void BlueSeaLatchingRelay::setOpened() {
-    Serial.print(this->name);
-    Serial.print(F(" opening"));
-    // Serial.println(this->getState());
     
     if(this->getState() != BlueSeaLatchingRelay::RELAY_OPEN) {
+    
         analogWrite(this->openPin, 255);
+        
         Serial.print(this->name);
         Serial.println(F(" opening"));
+        
         delay(latchingDurationTime);
+        
         analogWrite(this->openPin, 0);
         
-        delay(400);
+        // delay to be sure that 2 relays can't be activated at the same time (causing fuse blow)
+        delay(800);
              
         if(this->getState() == BlueSeaLatchingRelay::RELAY_OPEN) {
         	Serial.println(F("r. opened"));

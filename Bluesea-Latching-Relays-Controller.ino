@@ -6,6 +6,8 @@
 //------
 // SETTINGS
 
+const bool activatePrintStatus = true;
+
 // Read BMV Serial And checking SOC value
 // var boolean
 const byte activateBMVSerialInfos = 1;
@@ -15,10 +17,10 @@ const byte activateBMVSerialInfos = 1;
 const byte activateCheckingCellsVoltageDifference = 1;
 
 // Opening charge relay for SOC > ChargeMax
-const int SOCMax = 998;
+const int SOCMax = 932;
 
 // Closing charge relay for SOC < ChargeMin 
-const int SOCMaxReset = 994;
+const int SOCMaxReset = 930;
 
 // Opening Load relay for SOC < LoadMin
 const int SOCMin = 300;
@@ -35,7 +37,7 @@ const int BatteryVoltageMinReset = 12800;
 // Voltage difference between cells  or batteries
 // Absolute value (-100mV) = 100mV).
 // in mV
-const int CellsDifferenceMaxLimit = 40;
+const int CellsDifferenceMaxLimit = 100;
 
 // Voltage difference maximum to considere that the battery bank can be starting using again
 // in mV
@@ -124,12 +126,13 @@ bool BeginBmvDataSerie = false;
 
 // victron checksum 
 const byte num_keywords = 13;
- const byte value_bytes = 33;
+const byte value_bytes = 33;
 const byte label_bytes = 9;
 bool blockend = false;
 static byte blockindex = 0;
 char recv_label[num_keywords][label_bytes]  = {0};  // {0} tells the compiler to initalize it with 0. 
 char recv_value[num_keywords][value_bytes]  = {0};  // That does not mean it is filled with 0's
+unsigned SOCLastValue;
 
 String MessageTemp;
 
@@ -159,7 +162,7 @@ void setup()
   ChargeRelay.closePin = ChargeRelayClosePin;
   ChargeRelay.statePin = ChargeRelayStatePin;
   
-  Serial.begin(115200);
+  Serial.begin(19200);
 
   if(activateBMVSerialInfos) {
     Bmv.begin(19200); 
@@ -206,7 +209,7 @@ int getAdsBatteryVoltage() {
   if(BatteryVoltageTemp > 100) {
       BatteryVoltageUpdatedTime = millis();
   } else {
-    log(F("ADS C3 v. not available"),1);
+    log(F("ADS C3 v. not available"),1, 5000);
   }
   
   return BatteryVoltageTemp;
@@ -231,7 +234,7 @@ void run() {
 
   
   // --- Normal LOAD routines
-  // checking if Load relay must be closed
+  // checking if Load relay should be closed
   
   // first general condition
   // Normal operating range voltage and relay open
@@ -241,10 +244,10 @@ void run() {
       if(ChargeCycling == false) {
 
           // if using BMV SOC
-          if(activateBMVSerialInfos==1){
+          if(activateBMVSerialInfos){
             SOCCurrent = getBatterySOC();
             
-            if((SOCCurrent < SOCMax)) {
+            if((SOCCurrent > SOCMin)) {
               LoadRelay.setReadyToClose();        
               log(F("Load r. closing, routine"), 0);   
             }
@@ -269,7 +272,7 @@ void run() {
       if(DischargeCycling == false) {
 
           // if using BMV SOC
-          if(activateBMVSerialInfos==1){
+          if(activateBMVSerialInfos){
             SOCCurrent = getBatterySOC();
             
             if((SOCCurrent < SOCMax)) {
@@ -295,7 +298,7 @@ void run() {
     
     //---
     // SOC verifications
-    if((millis() - SOCUpdatedTime) < 6000) {
+    if((millis() - SOCUpdatedTime) < 20000) {
   
       // SOC Max detection
       if((SOCCurrent >= SOCMax) && (DischargeCycling == false)) {
@@ -363,7 +366,7 @@ void run() {
       }
       
     } else {      
-        MessageTemp = F("SOC upd time > 6s ");
+        MessageTemp = F("SOC upd time > 20s ");
         MessageTemp += (String) (SOCUpdatedTime/1000)+" s";
         log(MessageTemp, 0);
     }
@@ -423,6 +426,27 @@ void run() {
   }
 
 
+  // ---- Checking status relays and Cyclings concordances ---
+  // Discharge Status
+  if(DischargeCycling) {
+    // incorrect, ChargeRelay should be Open, because Cycling routine
+    if(ChargeRelay.getState() == ChargeRelay.RELAY_CLOSE) {      
+        // canceling cycling
+        DischargeCycling = 0;
+        log(F("Canceling DischargeCycling"), 0);
+    }
+  }
+
+  // Charging status
+  if(ChargeCycling) {
+    // incorrect, LoadRelay should be Open, because Cycling routine
+    if(LoadRelay.getState() == LoadRelay.RELAY_CLOSE) {      
+        // canceling cycling
+        ChargeCycling = 0;
+        log(F("Canceling ChargeCycling"), 0);
+    }
+  }
+
 
 
   //---
@@ -474,8 +498,11 @@ void run() {
   // applying actions on relays
   LoadRelay.applyReadyActions();
   ChargeRelay.applyReadyActions();
-
-   printStatus();
+  
+  if(activatePrintStatus) {
+    printStatus();
+  }
+  // 
  // checkVoltages();
 }
 
@@ -561,7 +588,8 @@ void readBmvData() {
               socLine = true;
             } else {
               if(socLine == true) {
-                  SOCTemp = atoi(ptr);                
+                  SOCTemp = atoi(ptr);   
+                  Serial.println("SOC : "+(String)SOCTemp);
               }
             }
 
@@ -589,13 +617,25 @@ void readBmvData() {
                   // the horizontal tab(9) we add them here again.  
                   checksum += 32;
               }
+
+              // Serial.println((String) checksum+" : Checksum ");
+              
               // Checksum should be 0, so if !0 we have correct data.
               if (!checksum) {    
                   if(SOCTemp) {
-                    SOC = SOCTemp;
-                    SOCUpdatedTime = millis();
-                    // log("SOC :"+(String)SOC, 0);
+
+                    // Other protection, if SOC difference between current value and last received value > 2
+                    // we considere that the current value is not valid.
+                    int tempValue = SOCTemp - SOCLastValue;
+                    if(abs(tempValue) <= 2) {                        
+                      SOC = SOCTemp;                      
+                      SOCUpdatedTime = millis();
+                    }          
+
+                     SOCLastValue = SOCTemp;
                   }
+
+                  
               } else {
                   MessageTemp = F("Bad checksum detected : ");
                   MessageTemp += (String) checksum;
@@ -721,15 +761,15 @@ void log(String message, byte buzz, byte buzzperiode = 100) {
 void printStatus() {
   Serial.println();
   //Serial.println(" ------- Status --- ");
-  Serial.print(F("Detected v. : Low / High  ")); Serial.print(HighVoltageDetected);Serial.print(F(" / ")); Serial.println(LowVoltageDetected);
+   Serial.print(F("Detected v. : Low / High  ")); Serial.print(HighVoltageDetected);Serial.print(F(" / ")); Serial.println(LowVoltageDetected);
   Serial.print(F("V. : ")); Serial.println(getBatteryVoltage());
   Serial.print(F("V. Max / Rst : ")); Serial.print(BatteryVoltageMax);  Serial.print(F(" / ")); Serial.println(BatteryVoltageMaxReset);
   Serial.print(F("V. Min / Rst : ")); Serial.print(BatteryVoltageMin);Serial.print(F(" / ")); Serial.println(BatteryVoltageMinReset);
   Serial.print(F("Charge r. status : ")); Serial.println(ChargeRelay.getState());
   Serial.print(F("Load r. status : "));  Serial.println(LoadRelay.getState());
   Serial.print(F("SOC : "));  Serial.println(getBatterySOC());  
- // Serial.print(F("SOC Max/ Max Rst : ")); Serial.print(SOCMax); Serial.print(F(" / ")); Serial.println(SOCMaxReset);    
- // Serial.print(F("SOC Min/ Min Rst : ")); Serial.print(SOCMin); Serial.print(F(" / ")); Serial.println(SOCMinReset);  
+  Serial.print(F("SOC Max/ Max Rst : ")); Serial.print(SOCMax); Serial.print(F(" / ")); Serial.println(SOCMaxReset);    
+  Serial.print(F("SOC Min/ Min Rst : ")); Serial.print(SOCMin); Serial.print(F(" / ")); Serial.println(SOCMinReset);  
 
   Serial.print(F("Cycling : Discharge / Charge ")); Serial.print(DischargeCycling);Serial.print(F(" / ")); Serial.println(ChargeCycling);
 
