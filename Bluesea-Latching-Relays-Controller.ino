@@ -6,42 +6,38 @@
 //------
 // SETTINGS
 
-const bool activatePrintStatus = true;
-
-// Read BMV Serial And checking SOC value
-// var boolean
-const byte activateBMVSerialInfos = 1;
+const byte activatePrintStatus = 1;
 
 // Checking cells differences
 // var boolean
 const byte activateCheckingCellsVoltageDifference = 1;
 
 // Opening charge relay for SOC > ChargeMax
-const int SOCMax = 932;
+const int SOCMax = 974;
 
 // Closing charge relay for SOC < ChargeMin 
-const int SOCMaxReset = 930;
+const int SOCMaxReset = 970;
 
 // Opening Load relay for SOC < LoadMin
-const int SOCMin = 300;
+const int SOCMin = 968;
 
 // Closing charge relay for SOC < LoadMin 
-const int SOCMinReset = 350;
+const int SOCMinReset = 970;
 
 const int BatteryVoltageMax = 13600;
-const int BatteryVoltageMaxReset = 13550; 
+const int BatteryVoltageMaxReset = 13380; 
 
-const int BatteryVoltageMin = 12400;
-const int BatteryVoltageMinReset = 12800;
+const int BatteryVoltageMin = 12800;
+const int BatteryVoltageMinReset = 12850;
 
 // Voltage difference between cells  or batteries
 // Absolute value (-100mV) = 100mV).
 // in mV
-const int CellsDifferenceMaxLimit = 100;
+const int CellsDifferenceMaxLimit = 80;
 
 // Voltage difference maximum to considere that the battery bank can be starting using again
 // in mV
-const int CellsDifferenceMaxReset = 25; 
+const int CellsDifferenceMaxReset = 40; 
 
 
 const byte LoadRelayClosePin = A2;
@@ -52,18 +48,22 @@ const byte ChargeRelayClosePin = A0;
 const byte ChargeRelayOpenPin = A1;
 const byte ChargeRelayStatePin = A7;
 
-const byte BmvRxPin = 2;
-const byte BmvTxPin = 3;
+const byte BmvRxPin = 3;
+const byte BmvTxPin = 2;
 
 const byte BuzzerPin = 7;
 
+// if pin = 1, BMV infos are collected
+const byte ActivateBmvSerialPin = 4;
 
-// ADS1115 Calibration at 10v
+
+
+// ADS1115 Calibration at 10v *1000
 // Ex: 10 / 18107 = 0,000552273
-const float adc0_calibration = 0.552029;
-const float adc1_calibration = 0.548878;
-const float adc2_calibration = 0.552486;
-const float adc3_calibration = 0.552486;
+const float adc0_calibration = 0.55240650;
+const float adc1_calibration = 0.54914015;
+const float adc2_calibration = 0.55267991;
+const float adc3_calibration = 0.55247466;
 
 // END SETTINGS
 //-------
@@ -80,11 +80,6 @@ int16_t adc0, adc1, adc2, adc3;
 
 BlueSeaLatchingRelay LoadRelay;
 BlueSeaLatchingRelay ChargeRelay;
-
-const byte buffsize = 32; 
-const char EOPmarker = '\n'; //This is the end of packet marker
-char serialbuf[buffsize]; //This gives the incoming serial some room. Change it if you want a
-char tempChars[buffsize];  
 
 unsigned int BatteryVoltage;
 unsigned long BatteryVoltageUpdatedTime;
@@ -121,18 +116,10 @@ bool LowVoltageDetected = false;
 // Charge And Load relay are closed, Alarm is ON
 bool CellsDifferenceDetected = false;
 
-// victron
-bool BeginBmvDataSerie = false;
-
 // victron checksum 
-const byte num_keywords = 13;
-const byte value_bytes = 33;
-const byte label_bytes = 9;
-bool blockend = false;
-static byte blockindex = 0;
-char recv_label[num_keywords][label_bytes]  = {0};  // {0} tells the compiler to initalize it with 0. 
-char recv_value[num_keywords][value_bytes]  = {0};  // That does not mean it is filled with 0's
-unsigned SOCLastValue;
+byte checksum = 0;
+String V_buffer;
+char c;
 
 String MessageTemp;
 
@@ -148,6 +135,7 @@ void setup()
   pinMode(ChargeRelayStatePin, INPUT_PULLUP);
   pinMode(LoadRelayStatePin, INPUT_PULLUP);
 
+  pinMode(ActivateBmvSerialPin, INPUT);
   pinMode(BuzzerPin, OUTPUT);
   
   // Load Relay declaration
@@ -164,7 +152,7 @@ void setup()
   
   Serial.begin(19200);
 
-  if(activateBMVSerialInfos) {
+  if(isBMVSerialInfos()) {
     Bmv.begin(19200); 
   }
 
@@ -176,7 +164,7 @@ void setup()
 }
  
 void loop() {
-  if(activateBMVSerialInfos) {
+  if(isBMVSerialInfos()) {
     readBmvData();
   }
 
@@ -244,7 +232,7 @@ void run() {
       if(ChargeCycling == false) {
 
           // if using BMV SOC
-          if(activateBMVSerialInfos){
+          if(isBMVSerialInfos()){
             SOCCurrent = getBatterySOC();
             
             if((SOCCurrent > SOCMin)) {
@@ -272,7 +260,7 @@ void run() {
       if(DischargeCycling == false) {
 
           // if using BMV SOC
-          if(activateBMVSerialInfos){
+          if(isBMVSerialInfos()){
             SOCCurrent = getBatterySOC();
             
             if((SOCCurrent < SOCMax)) {
@@ -293,7 +281,7 @@ void run() {
 
 
   // STARTING EXCEPTIONAL EVENTS
-  if(activateBMVSerialInfos) {
+  if(isBMVSerialInfos()) {
     SOCCurrent = getBatterySOC();
     
     //---
@@ -326,7 +314,7 @@ void run() {
               
               MessageTemp = F("SOC max reset acheived : ");
               MessageTemp += (String) (SOCCurrent/10.0);
-              MessageTemp += F(" %)");  
+              MessageTemp += F(" %");  
               log(MessageTemp, 0);      
            // }
             
@@ -432,7 +420,7 @@ void run() {
     // incorrect, ChargeRelay should be Open, because Cycling routine
     if(ChargeRelay.getState() == ChargeRelay.RELAY_CLOSE) {      
         // canceling cycling
-        DischargeCycling = 0;
+        DischargeCycling = false;
         log(F("Canceling DischargeCycling"), 0);
     }
   }
@@ -477,7 +465,7 @@ void run() {
             ChargeRelay.setReadyToClose();  
             LoadRelay.setReadyToClose();  
             
-            log(F("Cells v. diff < Reset"), 0);
+            log(F("Reset OK : Cells v. diff < Reset"), 0);
           }       
           
         }      
@@ -513,7 +501,30 @@ void run() {
  * 
  */
 int getAdsCellVoltage(int cellNumber) {
-  int16_t adc = ads.readADC_SingleEnded(cellNumber);
+
+    int16_t adc;
+    
+    // waiting for correct values
+    int unsigned attempts = 0;
+    do {
+      adc = ads.readADC_SingleEnded(cellNumber);
+ 
+      if(attempts > 0) {
+        Serial.println("Attemp : "+(String)+attempts+" / "+(String)+attempts);
+      }
+      
+      attempts++;
+
+      if(attempts >= 50) {
+          MessageTemp = F("Cell ");
+          MessageTemp += (String) cellNumber;
+          MessageTemp += F(" attempts to get voltage > 50)");   
+          log(MessageTemp, 1, 3000);
+      }
+      
+    } while(adc <= 0 && attempts <= 50);
+
+// Serial.println("Cell "+(String)cellNumber+" : "+(String)adc);
 
   if(cellNumber == 0) {
     return adc * adc0_calibration;
@@ -538,15 +549,15 @@ float getMaxCellVoltageDifference() {
     // Cells voltages
     float cellsVoltage[] = {0,0,0,0};
 
-    float adc3Voltage = getAdsCellVoltage(3);
-    float adc2Voltage = getAdsCellVoltage(2);
-    float adc1Voltage = getAdsCellVoltage(1);
-    float adc0Voltage = getAdsCellVoltage(0);
+    Cell3Voltage = getAdsCellVoltage(3);
+    Cell2Voltage = getAdsCellVoltage(2);
+    Cell1Voltage = getAdsCellVoltage(1);
+    Cell0Voltage = getAdsCellVoltage(0);
 
-    cellsVoltage[3] = adc3Voltage-adc2Voltage;
-    cellsVoltage[2] = adc2Voltage-adc1Voltage;
-    cellsVoltage[1] = adc1Voltage-adc0Voltage;
-    cellsVoltage[0] = adc0Voltage;
+    cellsVoltage[3] = Cell3Voltage-Cell2Voltage;
+    cellsVoltage[2] = Cell2Voltage-Cell1Voltage;
+    cellsVoltage[1] = Cell1Voltage-Cell0Voltage;
+    cellsVoltage[0] = Cell0Voltage;
 
     CellsDifferenceMaxUpdatedTime = millis();
 
@@ -559,146 +570,47 @@ float getMaxCellVoltageDifference() {
 // Reading Victron Datas
 // And extracting SOC and Voltage values
 void readBmvData() {
-  char splitLabelValueDelimiter[] = "\t";
+  
+  if (Bmv.available()) {
+    c = Bmv.read();
+    checksum += c;
 
-  while (Bmv.available() > 0) { 
-    
-      static int bufpos = 0; 
-      char inchar = Bmv.read();
+    if (V_buffer.length() < 80) {
+      V_buffer += c;
+    }
       
-      //Serial.write(inchar);
-       
-      if (inchar != EOPmarker) { 
-        serialbuf[bufpos] = inchar;
-        bufpos++; 
-      }
-      else { 
-        
-      //Serial.println(serialbuf);
-        strcpy(tempChars, serialbuf);
-        char* ptr = strtok(tempChars, splitLabelValueDelimiter);
-
-        bool voltageLine = false;
-        bool socLine = false;
-        while(ptr != NULL) {          
-        // Serial.print(ptr);
-
-            // SOC search
-            if (strcmp(ptr, "SOC") == 0) {
-              socLine = true;
-            } else {
-              if(socLine == true) {
-                  SOCTemp = atoi(ptr);   
-                  Serial.println("SOC : "+(String)SOCTemp);
-              }
-            }
-
-            // BMV Checksum verification
-            if (strcmp(ptr, "Checksum") == 0) {
- 
-              // We got a whole block into the received data.
-              // Check if the data received is not corrupted.
-              // Sum off all received bytes should be 0;
-              byte checksum = 0;
-              for (int x = 0; x < blockindex; x++) {
-                  // Loop over the labels and value gotten and add them.
-                  // Using a byte so the the % 256 is integrated. 
-                  char *v = recv_value[x];
-                  char *l = recv_label[x];
-                  while (*v) {
-                      checksum += *v;
-                      v++;
-                  }
-                  while (*l) {
-                      checksum+= *l;
-                      l++;
-                  }
-                  // Because we strip the new line(10), the carriage return(13) and 
-                  // the horizontal tab(9) we add them here again.  
-                  checksum += 32;
-              }
-
-              // Serial.println((String) checksum+" : Checksum ");
-              
-              // Checksum should be 0, so if !0 we have correct data.
-              if (!checksum) {    
-                  if(SOCTemp) {
-
-                    // Other protection, if SOC difference between current value and last received value > 2
-                    // we considere that the current value is not valid.
-                    int tempValue = SOCTemp - SOCLastValue;
-                    if(abs(tempValue) <= 2) {                        
-                      SOC = SOCTemp;                      
-                      SOCUpdatedTime = millis();
-                    }          
-
-                     SOCLastValue = SOCTemp;
-                  }
-
-                  
-              } else {
-                  MessageTemp = F("Bad checksum detected : ");
-                  MessageTemp += (String) checksum;
-                 log(MessageTemp, 0);
-                 //Serial.println(checksum);    
-              }
-              
-              // Reset the block index, and make sure we clear blockend.
-              blockindex = 0;
-              SOCTemp = 0;
-            }
-
-            
-            // create next part
-            ptr = strtok(NULL, splitLabelValueDelimiter);
-          }
-        
-         serialbuf[bufpos] = 0; //restart the buff
-         bufpos = 0; //restart the position of the buff
-      }
+    // end of line
+    if (c == '\n') { 
     
-      yield();
+      // Serial.println(V_buffer);
+       if (V_buffer.startsWith("SOC")) {
+        String temp_string = V_buffer.substring(V_buffer.indexOf("\t")+1);
+        SOCTemp = temp_string.toInt();
+       }
+    
+        // end of serie
+      if (V_buffer.startsWith("Checksum")) {       
+        
+          byte result = checksum % 256;
+    
+          // checksum OK
+         if(result == 0) {          
+           SOC = SOCTemp;
+           SOCUpdatedTime = millis();
+         } else {
+           // Checksum error
+         }
+    
+          // begin new serie
+         checksum = 0;
+       }
+    
+      // begin new line
+      V_buffer="";
+    }     
   }
 }
 
-/**
- * Search Cells Voltages and Battery voltage
- */
-void checkVoltages() {
-  adc0 = ads.readADC_SingleEnded(0);
-  Voltage = (adc0 * adc0_calibration)/1000;
-
-   Serial.print("AIN0: "); 
-  Serial.print(adc0);
-  Serial.print("\t Voltage: ");
-  Serial.println(Voltage, 7); 
-
-     adc1 = ads.readADC_SingleEnded(1);
-  Voltage = (adc1 * adc1_calibration)/1000;
-
-   Serial.print("AIN1: "); 
-  Serial.print(adc1);
-  Serial.print("\t Voltage: ");
-  Serial.println(Voltage, 7);  
-
-    adc2 = ads.readADC_SingleEnded(2);
-  Voltage = (adc2 * adc2_calibration)/1000;
-
-   Serial.print("AIN2: "); 
-  Serial.print(adc2);
-  Serial.print("\t Voltage: ");
-  Serial.println(Voltage, 7);  
-
-  adc3 = ads.readADC_SingleEnded(3);
-  Voltage = (adc3 * adc3_calibration)/1000;
-
-  Serial.print("AIN3: "); 
-  Serial.print(adc3);
-  Serial.print("\t Voltage: ");
-  Serial.println(Voltage, 7);  
-  Serial.println("--");  
-  
-}
 
 /**
  * Trigger Buzzer 
@@ -767,7 +679,7 @@ void printStatus() {
   Serial.print(F("V. Min / Rst : ")); Serial.print(BatteryVoltageMin);Serial.print(F(" / ")); Serial.println(BatteryVoltageMinReset);
   Serial.print(F("Charge r. status : ")); Serial.println(ChargeRelay.getState());
   Serial.print(F("Load r. status : "));  Serial.println(LoadRelay.getState());
-  Serial.print(F("SOC : "));  Serial.println(getBatterySOC());  
+  Serial.print(F("SOC activated / value: ")); Serial.print(isBMVSerialInfos()); Serial.print(F(" / ")); Serial.println(getBatterySOC());  
   Serial.print(F("SOC Max/ Max Rst : ")); Serial.print(SOCMax); Serial.print(F(" / ")); Serial.println(SOCMaxReset);    
   Serial.print(F("SOC Min/ Min Rst : ")); Serial.print(SOCMin); Serial.print(F(" / ")); Serial.println(SOCMinReset);  
 
@@ -776,31 +688,52 @@ void printStatus() {
   // Cells Voltage
   float voltageLastCell = 0;
   float voltageTotalCell = 0;
-  voltageTotalCell = getAdsCellVoltage(0);
+  voltageTotalCell = Cell0Voltage;
   Voltage = voltageTotalCell;
   Serial.print(F("Cell 0 : "));
-  Serial.println((Voltage/1000.00));
+  Serial.print((Voltage/1000.0),3);
+    Serial.print(F(" :  "));
+    Serial.println(voltageTotalCell);
 
   voltageLastCell = voltageTotalCell;
-  voltageTotalCell = getAdsCellVoltage(1);
+  voltageTotalCell = Cell1Voltage;
   Voltage = voltageTotalCell-voltageLastCell;
   Serial.print(F("Cell 1 : "));
-  Serial.println((Voltage/1000.00));
+  Serial.print((Voltage/1000.0),3);
+    Serial.print(F(" :  "));
+    Serial.println(voltageTotalCell);
 
   voltageLastCell = voltageTotalCell;
-  voltageTotalCell = getAdsCellVoltage(2);
+  voltageTotalCell = Cell2Voltage;
   Voltage = voltageTotalCell-voltageLastCell;
   Serial.print(F("Cell 2 : "));
-  Serial.println((Voltage/1000.00));
+  Serial.print((Voltage/1000.0),3);
+    Serial.print(F(" :  "));
+    Serial.println(voltageTotalCell);
 
   voltageLastCell = voltageTotalCell;
-  voltageTotalCell = getAdsCellVoltage(3);
+  voltageTotalCell = Cell3Voltage;
   Voltage = voltageTotalCell-voltageLastCell;
   Serial.print(F("Cell 3 : "));
-  Serial.println((Voltage/1000.00));
-  Serial.print(F("Cells Diff/Max/Rst : "));  Serial.print(getMaxCellVoltageDifference());  Serial.print(F(" mV / ")); Serial.print(CellsDifferenceMaxLimit);  Serial.print(F(" / ")); Serial.println(CellsDifferenceMaxReset);
+  Serial.print((Voltage/1000.0),3);
+    Serial.print(F(" :  "));
+    Serial.println(voltageTotalCell);
+    
+  Serial.print(F("Cells Diff/Max/Rst : "));  Serial.print(CellsDifferenceMax);  Serial.print(F(" mV / ")); Serial.print(CellsDifferenceMaxLimit);  Serial.print(F(" / ")); Serial.println(CellsDifferenceMaxReset);
   
   Serial.println();
     
 }
+
+/**
+ * Detection if BMV Serial should be collected and used
+ */
+boolean isBMVSerialInfos() {
+  if(digitalRead(ActivateBmvSerialPin) == HIGH) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
 
