@@ -1,4 +1,4 @@
-#include <SoftwareSerial.h>;
+#include <AltSoftSerial.h>
 #include <Thread.h>;
 #include <BlueSeaLatchingRelay.h>
 #include <Adafruit_ADS1015.h>
@@ -12,23 +12,33 @@ const byte activatePrintStatus = 1;
 // var boolean
 const byte activateCheckingCellsVoltageDifference = 1;
 
-// Opening charge relay for SOC > ChargeMax
-const int SOCMax = 974;
+// Opening charge relay for SOC >= SOCMax
+const int SOCMax = 1000;
 
-// Closing charge relay for SOC < ChargeMin 
-const int SOCMaxReset = 970;
+// Re-Close Charge Relay when SOCMaxReset is reached
+const int SOCMaxReset = 950;
 
-// Opening Load relay for SOC < LoadMin
-const int SOCMin = 968;
+// Opening Load relay if SOC <= SOCmin
+const int SOCMin = 350;
 
-// Closing charge relay for SOC < LoadMin 
-const int SOCMinReset = 970;
+// Re-Close Load Relay when SOCMaxReset is reached
+const int SOCMinReset = 370;
 
-const int BatteryVoltageMax = 13600;
-const int BatteryVoltageMaxReset = 13380; 
+// SOC Maximum time considerated valid 
+// in mS
+const int SOCMaxTimeValid = 10000;
 
-const int BatteryVoltageMin = 12800;
-const int BatteryVoltageMinReset = 12850;
+// Maximum Voltage security
+const int BatteryVoltageMax = 13800;  // 13,8v = 3,45v / Cell
+
+// Waiting for Max Reset Voltage after reaching Max Voltage (time to discharge the battery enough to use it)
+const int BatteryVoltageMaxReset = 13400;  // 13,4v = 3,35v / Cell
+
+// Minimum Voltage security
+const int BatteryVoltageMin = 12800; // 12,8v = 3,2v / Cell
+
+// Waiting for Min Reset Voltage after reaching Min Voltage (time to re-charge the battery enough to use it)
+const int BatteryVoltageMinReset = 12900; // 12,8  = 3,225v / Cell
 
 // Voltage difference between cells  or batteries
 // Absolute value (-100mV) = 100mV).
@@ -42,20 +52,16 @@ const int CellsDifferenceMaxReset = 40;
 
 const byte LoadRelayClosePin = A2;
 const byte LoadRelayOpenPin = A3;
-const byte LoadRelayStatePin = A6;
+const byte LoadRelayStatePin = A7;
 
 const byte ChargeRelayClosePin = A0;
 const byte ChargeRelayOpenPin = A1;
-const byte ChargeRelayStatePin = A7;
-
-const byte BmvRxPin = 3;
-const byte BmvTxPin = 2;
+const byte ChargeRelayStatePin = A6;
 
 const byte BuzzerPin = 7;
 
 // if pin = 1, BMV infos are collected
 const byte ActivateBmvSerialPin = 4;
-
 
 
 // ADS1115 Calibration at 10v *1000
@@ -69,7 +75,11 @@ const float adc3_calibration = 0.55247466;
 //-------
 
 // Program declarations
-SoftwareSerial Bmv(BmvRxPin,BmvTxPin); // RX, TX
+
+// RX pin 8 Tx pin 9
+AltSoftSerial Bmv; 
+
+// SoftwareSerial Bmv(BmvRxPin,BmvTxPin); // RX, TX
 Thread RunApplication = Thread();
 
 // ADS1115 on I2C0x48 adress
@@ -123,7 +133,10 @@ char c;
 
 String MessageTemp;
 
+int isfirstrun = 1;
+
 void log(String message, byte buzz, byte buzzperiode = 100);
+
 
 void setup()
 {
@@ -151,20 +164,22 @@ void setup()
   ChargeRelay.statePin = ChargeRelayStatePin;
   
   Serial.begin(19200);
-
-  if(isBMVSerialInfos()) {
-    Bmv.begin(19200); 
-  }
+  Bmv.begin(19200); 
 
   RunApplication.onRun(run);
-  RunApplication.setInterval(5000);
+  RunApplication.setInterval(10000); // 10 sec
 
   ads.begin();
 
 }
  
 void loop() {
-  if(isBMVSerialInfos()) {
+  if(isfirstrun) {
+    bip(3000);
+    isfirstrun = 0;
+  }
+  
+  if(isEnabledBMVSerialInfos()) {
     readBmvData();
   }
 
@@ -174,40 +189,6 @@ void loop() {
   
 }
 
-/**
- * Get Battery voltage
- * try with ADS1115 First, Victron BMV next
- */
-int getBatteryVoltage() {
-  int BatteryVoltageTemp = getAdsBatteryVoltage();
-  
-  if(BatteryVoltageTemp) {
-    return BatteryVoltageTemp;
-  }
-
-  return 0;
-}
-
-/**
- * Return Battery Voltage (12v) via ADS 
- */
-int getAdsBatteryVoltage() {
-  int BatteryVoltageTemp = getAdsCellVoltage(3);
-
-  if(BatteryVoltageTemp > 100) {
-      BatteryVoltageUpdatedTime = millis();
-  } else {
-    log(F("ADS C3 v. not available"),1, 5000);
-  }
-  
-  return BatteryVoltageTemp;
-}
-
-
-
-int getBatterySOC() {
-  return SOC;  
-}
 
 /**
  * Checking Voltage AND SOC and close or open relays
@@ -220,6 +201,9 @@ void run() {
   // storing BatteryVoltage in temp variable
   int CurrentBatteryVoltage = getBatteryVoltage();
 
+  // Get actual SOC
+  SOCCurrent = getBatterySOC();
+
   
   // --- Normal LOAD routines
   // checking if Load relay should be closed
@@ -229,10 +213,10 @@ void run() {
   if((CurrentBatteryVoltage > BatteryVoltageMin) && (LoadRelay.getState() != LoadRelay.RELAY_CLOSE)) {
     
       // not in special event
-      if(ChargeCycling == false) {
+      if((ChargeCycling == false)  && (LowVoltageDetected == false)) {
 
           // if using BMV SOC
-          if(isBMVSerialInfos()){
+          if(isUseBMVSerialInfos()){
             SOCCurrent = getBatterySOC();
             
             if((SOCCurrent > SOCMin)) {
@@ -257,10 +241,10 @@ void run() {
   if((CurrentBatteryVoltage < BatteryVoltageMax) && (ChargeRelay.getState() != ChargeRelay.RELAY_CLOSE)) {
     
       // not in special event
-      if(DischargeCycling == false) {
+      if((DischargeCycling == false) && (HighVoltageDetected == false)) {
 
           // if using BMV SOC
-          if(isBMVSerialInfos()){
+          if(isUseBMVSerialInfos()){
             SOCCurrent = getBatterySOC();
             
             if((SOCCurrent < SOCMax)) {
@@ -272,21 +256,95 @@ void run() {
           // Without SOC
           else {
             ChargeRelay.setReadyToClose();        
-            log(F("Load r. closing, routine"), 0);   
+            log(F("Charge r. closing, routine"), 0);   
           }          
       }   
   }
   
-   // END NORMAL ROUTINES
+
+   
+  //---
+  // Cancelling Charge Cycling
+  // 
+  if(ChargeCycling == true) {
+    
+    if(isUseBMVSerialInfos()) {
+           
+        // if SOC > SOCMinReset
+        if(SOCCurrent >= SOCMinReset) {
+          ChargeCycling = false;
+          LoadRelay.setReadyToClose();  
+
+          MessageTemp = F("SOC min reset reached : current/min : ");
+          MessageTemp += (String)SOCCurrent+" % /"+(String)SOCMinReset;       
+          log(MessageTemp, 0);   
+        }      
+              
+      } else {
+          // Case IF Charge Cycling = true while it shouldn't
+          // could append after disconnecting SOC check and ChargeCycling was ON.            
+          // if Voltage battery high enough, we close the Load Relay
+          if(CurrentBatteryVoltage >= BatteryVoltageMinReset) {
+            ChargeCycling = false;
+            LoadRelay.setReadyToClose();
+            log(F("Load r. closing, routine without SOC"), 0);   
+          } 
+      }
+  }
+
+
+
+  //---
+  // Cancelling DisCharge Cycling
+  // 
+  if(DischargeCycling == true) {
+      if(isUseBMVSerialInfos()) {      
+          // if SOC < SOCMaxReset
+          if(SOCCurrent <= SOCMaxReset) {
+            DischargeCycling = false;
+            ChargeRelay.setReadyToClose();  
+
+            MessageTemp = F("SOC max reset reached : current/max : ");
+            MessageTemp += (String)SOCCurrent+" % /"+(String)SOCMaxReset;       
+            log(MessageTemp, 0);   
+          }   
+                   
+      } else {
+          // Case IF DischargeCycling = true while it shouldn't
+          // could append after disconnecting SOC check and DischargeCycling was ON. 
+          // if Voltage battery Low enough, we close the Charge Relay
+          if(CurrentBatteryVoltage <= BatteryVoltageMaxReset) {
+              DischargeCycling = false;
+              ChargeRelay.setReadyToClose();
+              log(F("Charge r. closing, routine without SOC"), 0);   
+           }     
+      }    
+  }
+   
+   
+ // END NORMAL ROUTINES
+ // -------------------------
+
+  // if Charge relay has been manualy closed and doesn't match with the code
+ if((DischargeCycling == true) || (HighVoltageDetected  == true)) {
+    if(ChargeRelay.getState() != ChargeRelay.RELAY_OPEN) {
+      ChargeRelay.setReadyToOpen();
+      log(F("Charge relay state doesn't match, relay opening"), 0);   
+    }
+ }
+
+  // if Load relay has been manualy closed
+  if((ChargeCycling == true) || (LowVoltageDetected  == true)) {
+    if(LoadRelay.getState() != LoadRelay.RELAY_OPEN) {
+      LoadRelay.setReadyToOpen();
+      log(F("Load relay state doesn't match, relay opening"), 0);   
+    }
+ }
+
 
 
   // STARTING EXCEPTIONAL EVENTS
-  if(isBMVSerialInfos()) {
-    SOCCurrent = getBatterySOC();
-    
-    //---
-    // SOC verifications
-    if((millis() - SOCUpdatedTime) < 20000) {
+  if(isUseBMVSerialInfos()) {
   
       // SOC Max detection
       if((SOCCurrent >= SOCMax) && (DischargeCycling == false)) {
@@ -295,34 +353,11 @@ void run() {
         DischargeCycling = true;    
         ChargeRelay.setReadyToOpen();
         
-        MessageTemp = F("SOC max acheived : ");
+        MessageTemp = F("SOC max reached : ");
         MessageTemp += (String) (SOCCurrent/10.0);
-        MessageTemp += F(" %)");  
+        MessageTemp += F(" %");  
         log(MessageTemp, 0);     
         
-      } else {
-        
-        if(DischargeCycling == true) {
-  
-          // if SOC low enough, we can close the Charge Relay
-          if(SOCCurrent <= SOCMaxReset) { 
-                     
-            DischargeCycling = false;
-            //if(ChargeRelay.getState() != ChargeRelay.RELAY_CLOSE) {
-              
-              ChargeRelay.setReadyToClose();  
-              
-              MessageTemp = F("SOC max reset acheived : ");
-              MessageTemp += (String) (SOCCurrent/10.0);
-              MessageTemp += F(" %");  
-              log(MessageTemp, 0);      
-           // }
-            
-                   
-          }       
-        }  else {
-           // Waiting for discharging battery (cycling) in order to acheive SOCMaxReset
-        }
       }
   
   
@@ -334,31 +369,13 @@ void run() {
     
         LoadRelay.setReadyToOpen();
 
-        
-        MessageTemp = F("SOC min acheived : current/min : ");
-        MessageTemp += (String)SOCCurrent+" % /"+(String)SOCMin;   
-        log(MessageTemp, 0);     
-      } else {
-        if(ChargeCycling == true) {
+        MessageTemp = F("SOC min reached : current/min : ");
+        MessageTemp += (String)SOCCurrent+" % / "+(String)SOCMin;   
+        log(MessageTemp, 0);         
+    } 
+  } 
   
-          // if SOC High enough, we close the Charge Relay
-          if(SOCCurrent >= SOCMinReset) {          
-            ChargeCycling = false;
-            LoadRelay.setReadyToClose();  
 
-            MessageTemp = F("SOC min reset acheived : current/min : ");
-            MessageTemp += (String)SOCCurrent+" % /"+(String)SOCMinReset;       
-            log(MessageTemp, 0);   
-          }       
-        }       
-      }
-      
-    } else {      
-        MessageTemp = F("SOC upd time > 20s ");
-        MessageTemp += (String) (SOCUpdatedTime/1000)+" s";
-        log(MessageTemp, 0);
-    }
-  }
 
   //---
   // Voltage verifications
@@ -378,12 +395,14 @@ void run() {
 
         if(ChargeRelay.getState() == 1) {       
           ChargeRelay.forceToOpen();  
+          log(F("High Voltage Detected, force open"), 0);   
         }
 
         // if Voltage battery low enough, we close the Charge Relay
         if(CurrentBatteryVoltage <= BatteryVoltageMaxReset) {          
           HighVoltageDetected = false;
           ChargeRelay.setReadyToClose();  
+          log(F("Voltage Max Reset reached, HighVoltageDetected > false"), 0);   
         }       
       }      
     }
@@ -393,15 +412,22 @@ void run() {
        // Open LoadRelay
         LowVoltageDetected = true;
         LoadRelay.forceToOpen();
+        log(F("Low Voltage Detected"), 0);   
       
     } else {
       
       if(LowVoltageDetected == true) {
 
+         if(LoadRelay.getState() == 1) {       
+          LoadRelay.forceToOpen();  
+          log(F("Low Voltage Detected, force open"), 0);   
+        }
+
         // if Voltage battery high enough, we close the Load Relay
         if(CurrentBatteryVoltage >= BatteryVoltageMinReset) {
           LowVoltageDetected = false;
           LoadRelay.setReadyToClose();
+          log(F("Voltage Min Reset reached, LowVoltageDetected > false"), 0);   
         }       
       }      
     }
@@ -411,28 +437,6 @@ void run() {
     MessageTemp += (String) (BatteryVoltageUpdatedTime/1000);
     MessageTemp += F(" ms)");   
     log(MessageTemp, 1, 3000);
-  }
-
-
-  // ---- Checking status relays and Cyclings concordances ---
-  // Discharge Status
-  if(DischargeCycling) {
-    // incorrect, ChargeRelay should be Open, because Cycling routine
-    if(ChargeRelay.getState() == ChargeRelay.RELAY_CLOSE) {      
-        // canceling cycling
-        DischargeCycling = false;
-        log(F("Canceling DischargeCycling"), 0);
-    }
-  }
-
-  // Charging status
-  if(ChargeCycling) {
-    // incorrect, LoadRelay should be Open, because Cycling routine
-    if(LoadRelay.getState() == LoadRelay.RELAY_CLOSE) {      
-        // canceling cycling
-        ChargeCycling = 0;
-        log(F("Canceling ChargeCycling"), 0);
-    }
   }
 
 
@@ -565,11 +569,52 @@ float getMaxCellVoltageDifference() {
 }
 
 
+/**
+ * Get Battery voltage
+ * try with ADS1115 First, Victron BMV next
+ */
+int getBatteryVoltage() {
+  int BatteryVoltageTemp = getAdsBatteryVoltage();
+  
+  if(BatteryVoltageTemp) {
+    return BatteryVoltageTemp;
+  }
+
+  return 0;
+}
+
+/**
+ * Return Battery Voltage (12v) via ADS 
+ */
+int getAdsBatteryVoltage() {
+  int BatteryVoltageTemp = getAdsCellVoltage(3);
+
+  if(BatteryVoltageTemp > 100) {
+      BatteryVoltageUpdatedTime = millis();
+  } else {
+    log(F("ADS C3 v. not available"),1, 5000);
+  }
+  
+  return BatteryVoltageTemp;
+}
+
+
+/**
+ * Return SOC value
+ */
+int getBatterySOC() {
+  if((millis() - SOCUpdatedTime) < SOCMaxTimeValid) {
+      return SOC;  
+  } else {
+      return 0;
+  }
+}
 
 
 // Reading Victron Datas
 // And extracting SOC and Voltage values
 void readBmvData() {
+
   
   if (Bmv.available()) {
     c = Bmv.read();
@@ -648,6 +693,15 @@ float getDiffBtwMaxMin(float *values, int sizeOfArray) {
   return diffValue;
 }
 
+// Check if SOC Value is valid
+boolean isSOCValid() {
+   if((millis() - SOCUpdatedTime) < SOCMaxTimeValid) {
+      return true;
+   }
+
+   return false;  
+}
+
 void log(String message, byte buzz, byte buzzperiode = 100) {
   // TODO
   // trigger alarm and led... 
@@ -673,13 +727,13 @@ void log(String message, byte buzz, byte buzzperiode = 100) {
 void printStatus() {
   Serial.println();
   //Serial.println(" ------- Status --- ");
-   Serial.print(F("Detected v. : Low / High  ")); Serial.print(HighVoltageDetected);Serial.print(F(" / ")); Serial.println(LowVoltageDetected);
+   Serial.print(F("Detected v. : Low / High  ")); Serial.print(LowVoltageDetected);Serial.print(F(" / ")); Serial.println(HighVoltageDetected);
   Serial.print(F("V. : ")); Serial.println(getBatteryVoltage());
   Serial.print(F("V. Max / Rst : ")); Serial.print(BatteryVoltageMax);  Serial.print(F(" / ")); Serial.println(BatteryVoltageMaxReset);
   Serial.print(F("V. Min / Rst : ")); Serial.print(BatteryVoltageMin);Serial.print(F(" / ")); Serial.println(BatteryVoltageMinReset);
   Serial.print(F("Charge r. status : ")); Serial.println(ChargeRelay.getState());
   Serial.print(F("Load r. status : "));  Serial.println(LoadRelay.getState());
-  Serial.print(F("SOC activated / value: ")); Serial.print(isBMVSerialInfos()); Serial.print(F(" / ")); Serial.println(getBatterySOC());  
+  Serial.print(F("SOC Enable / Used / value: ")); Serial.print(isEnabledBMVSerialInfos()); Serial.print(F(" / ")); Serial.print(isUseBMVSerialInfos()); Serial.print(F(" / ")); Serial.println(getBatterySOC());  
   Serial.print(F("SOC Max/ Max Rst : ")); Serial.print(SOCMax); Serial.print(F(" / ")); Serial.println(SOCMaxReset);    
   Serial.print(F("SOC Min/ Min Rst : ")); Serial.print(SOCMin); Serial.print(F(" / ")); Serial.println(SOCMinReset);  
 
@@ -728,12 +782,31 @@ void printStatus() {
 /**
  * Detection if BMV Serial should be collected and used
  */
-boolean isBMVSerialInfos() {
-  if(digitalRead(ActivateBmvSerialPin) == HIGH) {
-    return true;
-  } else {
-    return false;
+boolean isEnabledBMVSerialInfos() {
+
+   // If PIn activated
+   if(digitalRead(ActivateBmvSerialPin) == HIGH) {
+      return true;
   }
+    
+  return false;  
+}
+
+/**
+ * Check if BMV Infos can be used
+ */
+boolean isUseBMVSerialInfos() {
+
+   // If PIn activated
+   if(isEnabledBMVSerialInfos()) {
+
+      // AND SOC valid
+      if(isSOCValid()) {
+        return true;
+      } 
+  }
+    
+  return false;  
 }
 
 

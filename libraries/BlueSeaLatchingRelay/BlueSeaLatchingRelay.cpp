@@ -86,6 +86,11 @@ void BlueSeaLatchingRelay::forceToOpen() {
 	this->setOpened();
 }
 
+/*
+ * Apply ready actions at the end of cycle
+ * ForceOpen or ForceClose have priority over readyToClose or readyToOpen
+ * ForceOpen has also priority over ForceClose
+ */
 void BlueSeaLatchingRelay::applyReadyActions() {
 	if((this->isForceToOpen != 1) && (this->isForceToClose != 1)) {
 		if(this->isReadyToOpen == 1) {
