@@ -1,6 +1,6 @@
 #include <AltSoftSerial.h>
 #include <Thread.h>;
-#include <BlueSeaLatchingRelay.h>
+#include "BlueSeaLatchingRelay.h"
 #include <Adafruit_ADS1015.h>
  
 //------
@@ -32,7 +32,7 @@ const int SOCMaxTimeValid = 10000;
 const int BatteryVoltageMax = 13800;  // 13,8v = 3,45v / Cell
 
 // Waiting for Max Reset Voltage after reaching Max Voltage (time to discharge the battery enough to use it)
-const int BatteryVoltageMaxReset = 13400;  // 13,4v = 3,35v / Cell
+const int BatteryVoltageMaxReset = 13360;  
 
 // Minimum Voltage security
 const int BatteryVoltageMin = 12800; // 12,8v = 3,2v / Cell
@@ -63,18 +63,29 @@ const byte BuzzerPin = 7;
 // if pin = 1, BMV infos are collected
 const byte ActivateBmvSerialPin = 4;
 
+// Number of cells in the battery
+const int unsigned cellsNumber = 4;
 
 // ADS1115 Calibration at 10v *1000
 // Ex: 10 / 18107 = 0,000552273
-const float adc0_calibration = 0.55240650;
-const float adc1_calibration = 0.54914015;
-const float adc2_calibration = 0.55267991;
-const float adc3_calibration = 0.55247466;
+// cell 1, 2, 3, 4 etc
+float adc_calibration[cellsNumber] = {
+  0.5518956,
+  0.54827077,
+  0.55232238,
+  0.55189998
+};
+
+const float adc0_calibration = 0.5518956;
+const float adc1_calibration = 0.54827077;
+const float adc2_calibration = 0.55232238;
+const float adc3_calibration = 0.55189998;
 
 // END SETTINGS
 //-------
 
 // Program declarations
+
 
 // RX pin 8 Tx pin 9
 AltSoftSerial Bmv; 
@@ -93,11 +104,6 @@ BlueSeaLatchingRelay ChargeRelay;
 
 unsigned int BatteryVoltage;
 unsigned long BatteryVoltageUpdatedTime;
-
-unsigned int Cell0Voltage;
-unsigned int Cell1Voltage;
-unsigned int Cell2Voltage;
-unsigned int Cell3Voltage;
 
 int CellsDifferenceMax;
 unsigned long CellsDifferenceMaxUpdatedTime;
@@ -175,7 +181,9 @@ void setup()
  
 void loop() {
   if(isfirstrun) {
-    bip(3000);
+    bip(50);
+    delay(50);
+    bip(50);
     isfirstrun = 0;
   }
   
@@ -530,17 +538,8 @@ int getAdsCellVoltage(int cellNumber) {
 
 // Serial.println("Cell "+(String)cellNumber+" : "+(String)adc);
 
-  if(cellNumber == 0) {
-    return adc * adc0_calibration;
-  } else if(cellNumber == 1) {
-    return adc * adc1_calibration;
-  } else if(cellNumber == 2) {
-    return adc * adc2_calibration;
-  } else if(cellNumber == 3) {
-    return adc * adc3_calibration;
-  }
-
-  return 0;
+ 
+  return adc * adc_calibration[cellsNumber];
 }
 
 /**
@@ -553,19 +552,21 @@ float getMaxCellVoltageDifference() {
     // Cells voltages
     float cellsVoltage[] = {0,0,0,0};
 
-    Cell3Voltage = getAdsCellVoltage(3);
-    Cell2Voltage = getAdsCellVoltage(2);
-    Cell1Voltage = getAdsCellVoltage(1);
-    Cell0Voltage = getAdsCellVoltage(0);
-
-    cellsVoltage[3] = Cell3Voltage-Cell2Voltage;
-    cellsVoltage[2] = Cell2Voltage-Cell1Voltage;
-    cellsVoltage[1] = Cell1Voltage-Cell0Voltage;
-    cellsVoltage[0] = Cell0Voltage;
+    int i;
+    int cellVoltage;
+    for (i = cellsNumber; i <= 0; i--) {
+        if(i>0) {
+           cellVoltage = getAdsCellVoltage(i) - getAdsCellVoltage((i-1));
+        } else {
+          cellVoltage = getAdsCellVoltage(i);
+        }
+       
+        cellsVoltage[cellsNumber] = cellVoltage;
+    }
 
     CellsDifferenceMaxUpdatedTime = millis();
 
-    return getDiffBtwMaxMin(cellsVoltage, 4);
+    return getDiffBtwMaxMin(cellsVoltage, cellsNumber);
 }
 
 
@@ -740,41 +741,25 @@ void printStatus() {
   Serial.print(F("Cycling : Discharge / Charge ")); Serial.print(DischargeCycling);Serial.print(F(" / ")); Serial.println(ChargeCycling);
 
   // Cells Voltage
-  float voltageLastCell = 0;
-  float voltageTotalCell = 0;
-  voltageTotalCell = Cell0Voltage;
-  Voltage = voltageTotalCell;
-  Serial.print(F("Cell 0 : "));
-  Serial.print((Voltage/1000.0),3);
+  int i;
+  int cellVoltage;
+  for (i = cellsNumber; i <= 0; i--) {
+      if(i>0) {
+         cellVoltage = getAdsCellVoltage(i) - getAdsCellVoltage((i-1));
+      } else {
+        cellVoltage = getAdsCellVoltage(i);
+      }
+     
+    Serial.print(F("Cell : "));
+    Serial.print(i);
+    Serial.print(F(" / "));
+      
+    Serial.print((cellVoltage/1000.0),3);
     Serial.print(F(" :  "));
-    Serial.println(voltageTotalCell);
+    Serial.println(getAdsCellVoltage(i));
+  }
 
-  voltageLastCell = voltageTotalCell;
-  voltageTotalCell = Cell1Voltage;
-  Voltage = voltageTotalCell-voltageLastCell;
-  Serial.print(F("Cell 1 : "));
-  Serial.print((Voltage/1000.0),3);
-    Serial.print(F(" :  "));
-    Serial.println(voltageTotalCell);
-
-  voltageLastCell = voltageTotalCell;
-  voltageTotalCell = Cell2Voltage;
-  Voltage = voltageTotalCell-voltageLastCell;
-  Serial.print(F("Cell 2 : "));
-  Serial.print((Voltage/1000.0),3);
-    Serial.print(F(" :  "));
-    Serial.println(voltageTotalCell);
-
-  voltageLastCell = voltageTotalCell;
-  voltageTotalCell = Cell3Voltage;
-  Voltage = voltageTotalCell-voltageLastCell;
-  Serial.print(F("Cell 3 : "));
-  Serial.print((Voltage/1000.0),3);
-    Serial.print(F(" :  "));
-    Serial.println(voltageTotalCell);
-    
   Serial.print(F("Cells Diff/Max/Rst : "));  Serial.print(CellsDifferenceMax);  Serial.print(F(" mV / ")); Serial.print(CellsDifferenceMaxLimit);  Serial.print(F(" / ")); Serial.println(CellsDifferenceMaxReset);
-  
   Serial.println();
     
 }
