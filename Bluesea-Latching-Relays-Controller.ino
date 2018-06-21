@@ -38,7 +38,7 @@ const int BatteryVoltageMaxReset = 13360;
 const int BatteryVoltageMin = 12800; // 12,8v = 3,2v / Cell
 
 // Waiting for Min Reset Voltage after reaching Min Voltage (time to re-charge the battery enough to use it)
-const int BatteryVoltageMinReset = 12900; // 12,8  = 3,225v / Cell
+const int BatteryVoltageMinReset = 12900; // 12,9  = 3,225v / Cell
 
 // Voltage difference between cells  or batteries
 // Absolute value (-100mV) = 100mV).
@@ -69,23 +69,17 @@ const int unsigned cellsNumber = 4;
 // ADS1115 Calibration at 10v *1000
 // Ex: 10 / 18107 = 0,000552273
 // cell 1, 2, 3, 4 etc
-float adc_calibration[cellsNumber] = {
+float adc_calibration[] = {
   0.5518956,
   0.54827077,
   0.55232238,
   0.55189998
 };
 
-const float adc0_calibration = 0.5518956;
-const float adc1_calibration = 0.54827077;
-const float adc2_calibration = 0.55232238;
-const float adc3_calibration = 0.55189998;
-
 // END SETTINGS
 //-------
 
 // Program declarations
-
 
 // RX pin 8 Tx pin 9
 AltSoftSerial Bmv; 
@@ -95,10 +89,8 @@ Thread RunApplication = Thread();
 
 // ADS1115 on I2C0x48 adress
 Adafruit_ADS1115 ads(0x48);
-float Voltage = 0.0;
-int16_t adc0, adc1, adc2, adc3;
 
-
+// Relays declaration
 BlueSeaLatchingRelay LoadRelay;
 BlueSeaLatchingRelay ChargeRelay;
 
@@ -113,11 +105,11 @@ unsigned int SOCTemp;
 unsigned int SOCCurrent;
 unsigned long SOCUpdatedTime;
 
-// If DischargeCycling = true : the battery is full and Charge Relay is open 
-bool DischargeCycling = false;
+// If SOCDisSOCChargeCycling = true : the battery is full and Charge Relay is open 
+bool SOCDisSOCChargeCycling = false;
 
-// if ChargeCycling = true : the battery is empty and Load relay is opened
-bool ChargeCycling = false;
+// if SOCChargeCycling = true : the battery is empty and Load relay is opened
+bool SOCChargeCycling = false;
 
 // If High voltage has been detected (waiting for HighVoltageReset)
 // Charge relay is closed
@@ -221,7 +213,7 @@ void run() {
   if((CurrentBatteryVoltage > BatteryVoltageMin) && (LoadRelay.getState() != LoadRelay.RELAY_CLOSE)) {
     
       // not in special event
-      if((ChargeCycling == false)  && (LowVoltageDetected == false)) {
+      if((SOCChargeCycling == false)  && (LowVoltageDetected == false)) {
 
           // if using BMV SOC
           if(isUseBMVSerialInfos()){
@@ -249,7 +241,7 @@ void run() {
   if((CurrentBatteryVoltage < BatteryVoltageMax) && (ChargeRelay.getState() != ChargeRelay.RELAY_CLOSE)) {
     
       // not in special event
-      if((DischargeCycling == false) && (HighVoltageDetected == false)) {
+      if((SOCDisSOCChargeCycling == false) && (HighVoltageDetected == false)) {
 
           // if using BMV SOC
           if(isUseBMVSerialInfos()){
@@ -274,13 +266,13 @@ void run() {
   //---
   // Cancelling Charge Cycling
   // 
-  if(ChargeCycling == true) {
+  if(SOCChargeCycling == true) {
     
     if(isUseBMVSerialInfos()) {
            
         // if SOC > SOCMinReset
         if(SOCCurrent >= SOCMinReset) {
-          ChargeCycling = false;
+          SOCChargeCycling = false;
           LoadRelay.setReadyToClose();  
 
           MessageTemp = F("SOC min reset reached : current/min : ");
@@ -290,10 +282,11 @@ void run() {
               
       } else {
           // Case IF Charge Cycling = true while it shouldn't
-          // could append after disconnecting SOC check and ChargeCycling was ON.            
+          // could append after disconnecting SOC check and SOCChargeCycling was ON.            
           // if Voltage battery high enough, we close the Load Relay
-          if(CurrentBatteryVoltage >= BatteryVoltageMinReset) {
-            ChargeCycling = false;
+          
+           if(LowVoltageDetected == false) {
+            SOCChargeCycling = false;
             LoadRelay.setReadyToClose();
             log(F("Load r. closing, routine without SOC"), 0);   
           } 
@@ -305,11 +298,11 @@ void run() {
   //---
   // Cancelling DisCharge Cycling
   // 
-  if(DischargeCycling == true) {
+  if(SOCDisSOCChargeCycling == true) {
       if(isUseBMVSerialInfos()) {      
           // if SOC < SOCMaxReset
           if(SOCCurrent <= SOCMaxReset) {
-            DischargeCycling = false;
+            SOCDisSOCChargeCycling = false;
             ChargeRelay.setReadyToClose();  
 
             MessageTemp = F("SOC max reset reached : current/max : ");
@@ -318,11 +311,11 @@ void run() {
           }   
                    
       } else {
-          // Case IF DischargeCycling = true while it shouldn't
-          // could append after disconnecting SOC check and DischargeCycling was ON. 
+          // Case IF SOCDisSOCChargeCycling = true while it shouldn't
+          // could append after disconnecting SOC check and SOCDisSOCChargeCycling was ON. 
           // if Voltage battery Low enough, we close the Charge Relay
-          if(CurrentBatteryVoltage <= BatteryVoltageMaxReset) {
-              DischargeCycling = false;
+          if(HighVoltageDetected == false) {
+              SOCDisSOCChargeCycling = false;
               ChargeRelay.setReadyToClose();
               log(F("Charge r. closing, routine without SOC"), 0);   
            }     
@@ -334,7 +327,8 @@ void run() {
  // -------------------------
 
   // if Charge relay has been manualy closed and doesn't match with the code
- if((DischargeCycling == true) || (HighVoltageDetected  == true)) {
+  // Relay must be opened
+ if((SOCDisSOCChargeCycling == true) || (HighVoltageDetected  == true)) {
     if(ChargeRelay.getState() != ChargeRelay.RELAY_OPEN) {
       ChargeRelay.setReadyToOpen();
       log(F("Charge relay state doesn't match, relay opening"), 0);   
@@ -342,7 +336,8 @@ void run() {
  }
 
   // if Load relay has been manualy closed
-  if((ChargeCycling == true) || (LowVoltageDetected  == true)) {
+  // Relay must be opened
+  if((SOCChargeCycling == true) || (LowVoltageDetected  == true)) {
     if(LoadRelay.getState() != LoadRelay.RELAY_OPEN) {
       LoadRelay.setReadyToOpen();
       log(F("Load relay state doesn't match, relay opening"), 0);   
@@ -355,10 +350,10 @@ void run() {
   if(isUseBMVSerialInfos()) {
   
       // SOC Max detection
-      if((SOCCurrent >= SOCMax) && (DischargeCycling == false)) {
+      if((SOCCurrent >= SOCMax) && (SOCDisSOCChargeCycling == false)) {
         
         // Open Charge Relay
-        DischargeCycling = true;    
+        SOCDisSOCChargeCycling = true;    
         ChargeRelay.setReadyToOpen();
         
         MessageTemp = F("SOC max reached : ");
@@ -370,10 +365,10 @@ void run() {
   
   
        // SOC Min detection
-      if((SOCCurrent <= SOCMin) && (ChargeCycling == false)) {
+      if((SOCCurrent <= SOCMin) && (SOCChargeCycling == false)) {
         
         // Open Load Relay
-        ChargeCycling = true;
+        SOCChargeCycling = true;
     
         LoadRelay.setReadyToOpen();
 
@@ -445,6 +440,9 @@ void run() {
     MessageTemp += (String) (BatteryVoltageUpdatedTime/1000);
     MessageTemp += F(" ms)");   
     log(MessageTemp, 1, 3000);
+
+    LoadRelay.forceToOpen();
+    log(F("No Voltage Detected, force open load relay"), 0);   
   }
 
 
@@ -512,14 +510,14 @@ void run() {
  * Get Cell voltage from ADS1115
  * 
  */
-int getAdsCellVoltage(int cellNumber) {
+int getAdsCellVoltage(unsigned int cellNumber) {
 
     int16_t adc;
     
     // waiting for correct values
     int unsigned attempts = 0;
     do {
-      adc = ads.readADC_SingleEnded(cellNumber);
+      adc = ads.readADC_SingleEnded((uint8_t) cellNumber);
  
       if(attempts > 0) {
         Serial.println("Attemp : "+(String)+attempts+" / "+(String)+attempts);
@@ -536,10 +534,9 @@ int getAdsCellVoltage(int cellNumber) {
       
     } while(adc <= 0 && attempts <= 50);
 
-// Serial.println("Cell "+(String)cellNumber+" : "+(String)adc);
-
+ // Serial.println("Cell "+(String)cellNumber+" : "+(String)adc+" : v "+(String) (adc * adc_calibration[cellNumber]));
  
-  return adc * adc_calibration[cellsNumber];
+  return adc * adc_calibration[cellNumber];
 }
 
 /**
@@ -550,23 +547,23 @@ float getMaxCellVoltageDifference() {
     float maxDiff = 0;
 
     // Cells voltages
-    float cellsVoltage[] = {0,0,0,0};
+    float cellsVoltage[(cellsNumber-1)];
 
     int i;
     int cellVoltage;
-    for (i = cellsNumber; i <= 0; i--) {
+    for (i = (cellsNumber-1); i >= 0; i--) {
         if(i>0) {
            cellVoltage = getAdsCellVoltage(i) - getAdsCellVoltage((i-1));
         } else {
           cellVoltage = getAdsCellVoltage(i);
         }
        
-        cellsVoltage[cellsNumber] = cellVoltage;
+        cellsVoltage[i] = cellVoltage;
     }
 
     CellsDifferenceMaxUpdatedTime = millis();
 
-    return getDiffBtwMaxMin(cellsVoltage, cellsNumber);
+    return getDiffBtwMaxMin(cellsVoltage, (cellsNumber-1));
 }
 
 
@@ -588,7 +585,7 @@ int getBatteryVoltage() {
  * Return Battery Voltage (12v) via ADS 
  */
 int getAdsBatteryVoltage() {
-  int BatteryVoltageTemp = getAdsCellVoltage(3);
+  int BatteryVoltageTemp = getAdsCellVoltage((cellsNumber-1));
 
   if(BatteryVoltageTemp > 100) {
       BatteryVoltageUpdatedTime = millis();
@@ -678,8 +675,7 @@ float getDiffBtwMaxMin(float *values, int sizeOfArray) {
   
   for (byte k=0; k < sizeOfArray; k++) {
     if (values[k] > maxValue) {
-       maxValue = values[k];
-  
+       maxValue = values[k];  
     }
   }
   
@@ -738,12 +734,12 @@ void printStatus() {
   Serial.print(F("SOC Max/ Max Rst : ")); Serial.print(SOCMax); Serial.print(F(" / ")); Serial.println(SOCMaxReset);    
   Serial.print(F("SOC Min/ Min Rst : ")); Serial.print(SOCMin); Serial.print(F(" / ")); Serial.println(SOCMinReset);  
 
-  Serial.print(F("Cycling : Discharge / Charge ")); Serial.print(DischargeCycling);Serial.print(F(" / ")); Serial.println(ChargeCycling);
+  Serial.print(F("Cycling : Discharge / Charge ")); Serial.print(SOCDisSOCChargeCycling);Serial.print(F(" / ")); Serial.println(SOCChargeCycling);
 
   // Cells Voltage
   int i;
   int cellVoltage;
-  for (i = cellsNumber; i <= 0; i--) {
+  for (i = (cellsNumber-1); i >= 0; i--) {
       if(i>0) {
          cellVoltage = getAdsCellVoltage(i) - getAdsCellVoltage((i-1));
       } else {
