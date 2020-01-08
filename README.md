@@ -1,3 +1,9 @@
+### dernier update 2020-01-08
+Modification du comportement de la détection du voltage minimum de la batterie suite à un problème pendant 2 mois d'absence.
+Le SOC était toujours à 100% parce que le Victron ne détectait pas les petites consommations de courant (Victron BMV lui-même, contrôleur de batterie, conso du régulateur de panneau solaire). Le relai de charge ne s'est dont pas fermé et à mon retour la batterie était à 10.7v
+
+J'ai aussi rajouté des détections de voltage trop haut ou trop bas pour chaque cellule. Respectueusement 2.8v et 3.8v.
+
 ### Gestion des relais de charge et décharge dans un système de batterie Lifepo4.
 
 Dans un système avec batteries au lifepo4, il faut pouvoir couper la charge quand les batteries sont pleines, pour ne pas passer en mode float et abimer les batteries sur le long terme.

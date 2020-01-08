@@ -40,14 +40,20 @@ const int BatteryVoltageMin = 12800; // 12,8v = 3,2v / Cell
 // Waiting for Min Reset Voltage after reaching Min Voltage (time to re-charge the battery enough to use it)
 const int BatteryVoltageMinReset = 12900; // 12,9  = 3,225v / Cell
 
+// Minimum operating cell voltage
+const int CellVoltageMin = 280;
+
+// Maximum operating cell voltage
+const int CellVoltageMax = 380;
+
 // Voltage difference between cells  or batteries
 // Absolute value (-100mV) = 100mV).
 // in mV
-const int CellsDifferenceMaxLimit = 80;
+const int CellsDifferenceMaxLimit = 150;
 
 // Voltage difference maximum to considere that the battery bank can be starting using again
 // in mV
-const int CellsDifferenceMaxReset = 40; 
+const int CellsDifferenceMaxReset = 100; 
 
 
 const byte LoadRelayClosePin = A2;
@@ -123,6 +129,17 @@ bool LowVoltageDetected = false;
 // waiting for a lower difference 
 // Charge And Load relay are closed, Alarm is ON
 bool CellsDifferenceDetected = false;
+
+// If an individual cell voltage is too low
+// waiting for a higher value
+// force charging, alarm is ON
+bool CellVoltageMinDetected = false;
+
+// If an individual cell voltage is too high
+// waiting for a lower value
+// force discharging, alarm is ON
+bool CellVoltageMaxDetected = false;
+
 
 // victron checksum 
 byte checksum = 0;
@@ -396,7 +413,7 @@ void run() {
       
       if(HighVoltageDetected == true) {
 
-        if(ChargeRelay.getState() == 1) {       
+        if(ChargeRelay.getState() == ChargeRelay.RELAY_CLOSE) {       
           ChargeRelay.forceToOpen();  
           log(F("High Voltage Detected, force open"), 0);   
         }
@@ -416,16 +433,36 @@ void run() {
         LowVoltageDetected = true;
         LoadRelay.forceToOpen();
         log(F("Low Voltage Detected"), 0);   
+
+        // Constrain battery to charge
+        // in case of SOC >= max SOC, charge relay is open (can happen when very low consumption is not detected by Victron monitor)
+        if(ChargeRelay.getState() == ChargeRelay.RELAY_OPEN) { 
+            ChargeRelay.forceToClose();
+            MessageTemp = F("Constrain Charge Relay to close. SOC : ");
+            MessageTemp += (String) getBatterySOC();
+            MessageTemp += F(" . Current voltage : "); 
+            MessageTemp += (String) CurrentBatteryVoltage;
+            log(MessageTemp, 0); 
+        }
+
       
     } else {
       
       if(LowVoltageDetected == true) {
 
-         if(LoadRelay.getState() == 1) {       
+         if(LoadRelay.getState() == LoadRelay.RELAY_CLOSE) {       
           LoadRelay.forceToOpen();  
           log(F("Low Voltage Detected, force open"), 0);   
         }
 
+         // Constrain battery to charge
+        if(ChargeRelay.getState() == ChargeRelay.RELAY_OPEN) { 
+            ChargeRelay.forceToClose();
+            MessageTemp = F("Constrain Charge Relay to close. secound atempt.");
+            log(MessageTemp, 0); 
+        }
+
+        
         // if Voltage battery high enough, we close the Load Relay
         if(CurrentBatteryVoltage >= BatteryVoltageMinReset) {
           LowVoltageDetected = false;
@@ -454,11 +491,10 @@ void run() {
 
     if((millis() - CellsDifferenceMaxUpdatedTime) < 10000) {
       
-      // high voltage detection
+      // Too much voltage difference detected
        if((CellsDifferenceMax >= CellsDifferenceMaxLimit) && (CellsDifferenceDetected == false)) {
-          // Open Load AND charge Relay 
+          // Open Load relay
           CellsDifferenceDetected = true;
-          ChargeRelay.forceToOpen();
           LoadRelay.forceToOpen();
 
           MessageTemp = F("Cells v. diff too high ");
@@ -472,7 +508,6 @@ void run() {
           // if Votage battery low enough, we close the LoadRelay
           if(CellsDifferenceMax <= CellsDifferenceMaxReset) {          
             CellsDifferenceDetected = false;
-            ChargeRelay.setReadyToClose();  
             LoadRelay.setReadyToClose();  
             
             log(F("Reset OK : Cells v. diff < Reset"), 0);
@@ -486,6 +521,72 @@ void run() {
 
   }
 
+// #########
+   // checking for Individual cell voltage detection
+   int i;
+    int cellVoltage;
+    for (i = (cellsNumber-1); i >= 0; i--) {
+        if(i>0) {
+           cellVoltage = getAdsCellVoltage(i) - getAdsCellVoltage((i-1));
+        } else {
+          cellVoltage = getAdsCellVoltage(i);
+        }
+
+        // HIGH individual voltage cell detected
+        if((cellVoltage > CellVoltageMax) && (CellVoltageMaxDetected == false)) {
+           // Open Charge Relay 
+          CellVoltageMaxDetected = true;
+          ChargeRelay.forceToOpen();
+          
+          // force discharging
+          LoadRelay.forceToClose();
+    
+          MessageTemp = F("High individual voltage detected on cell ");
+          MessageTemp += (String) (i);
+          MessageTemp += F(" . Voltage : )");
+          MessageTemp += (String) cellVoltage;  
+          log(MessageTemp, 1, 2000);
+          
+        } else {    
+          
+          if(CellVoltageMaxDetected == true) {
+      
+            // if voltage cell low enough, we close the LoadRelay
+            if(cellVoltage <= CellVoltageMax) {          
+              CellVoltageMaxDetected = false; 
+              log(F("Reset OK : high voltage cell low enough"), 0);
+            }                   
+          }      
+        }
+
+
+          // LOW individual voltage cell detected
+        if((cellVoltage < CellVoltageMin) && (CellVoltageMinDetected == false)) {
+           // Open load Relay, Close charge relay 
+          CellVoltageMinDetected = true;
+          LoadRelay.forceToOpen();
+
+          // force charging
+          ChargeRelay.forceToClose();
+    
+          MessageTemp = F("Low individual voltage detected on cell ");
+          MessageTemp += (String) (i);
+          MessageTemp += F(" . Voltage : )");
+          MessageTemp += (String) cellVoltage;  
+          log(MessageTemp, 1, 2000);
+          
+        } else {    
+          
+          if(CellVoltageMinDetected == true) {
+      
+            // if voltage cell high enough
+            if(cellVoltage >= CellVoltageMin) {          
+              CellVoltageMinDetected = false;        
+              log(F("Reset OK : low voltage cell high enough"), 0);
+            }          
+          }      
+        }  
+    }
 
    
 
@@ -789,5 +890,3 @@ boolean isUseBMVSerialInfos() {
     
   return false;  
 }
-
-
