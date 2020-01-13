@@ -6,7 +6,7 @@
 //------
 // SETTINGS
 
-const byte activatePrintStatus = 1;
+const byte activatePrintStatus = 0;
 
 // Checking cells differences
 // var boolean
@@ -19,10 +19,10 @@ const int SOCMax = 1000;
 const int SOCMaxReset = 950;
 
 // Opening Load relay if SOC <= SOCmin
-const int SOCMin = 350;
+const int SOCMin = 200;
 
 // Re-Close Load Relay when SOCMaxReset is reached
-const int SOCMinReset = 370;
+const int SOCMinReset = 250;
 
 // SOC Maximum time considerated valid 
 // in mS
@@ -35,16 +35,16 @@ const int BatteryVoltageMax = 13800;  // 13,8v = 3,45v / Cell
 const int BatteryVoltageMaxReset = 13360;  
 
 // Minimum Voltage security
-const int BatteryVoltageMin = 12800; // 12,8v = 3,2v / Cell
+const int BatteryVoltageMin = 12400; // 12,4v = 3,1v / Cell
 
 // Waiting for Min Reset Voltage after reaching Min Voltage (time to re-charge the battery enough to use it)
-const int BatteryVoltageMinReset = 12900; // 12,9  = 3,225v / Cell
+const int BatteryVoltageMinReset = 12800; // 12,9  = 3,225v / Cell
 
 // Minimum operating cell voltage
-const int CellVoltageMin = 280;
+const int CellVoltageMin = 310;
 
 // Maximum operating cell voltage
-const int CellVoltageMax = 380;
+const int CellVoltageMax = 360;
 
 // Voltage difference between cells  or batteries
 // Absolute value (-100mV) = 100mV).
