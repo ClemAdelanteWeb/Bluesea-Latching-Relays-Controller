@@ -2,6 +2,13 @@
 #include <Thread.h>;
 #include "BlueSeaLatchingRelay.h"
 #include <Adafruit_ADS1015.h>
+#include <Wire.h>
+// clock timer
+// librairie à télécharger sur https://github.com/rodan/ds3231
+#include <ds3231.h>
+// sd card 
+#include <SPI.h>
+#include <SD.h>
  
 //------
 // SETTINGS
@@ -35,13 +42,13 @@ const int BatteryVoltageMax = 13800;  // 13,8v = 3,45v / Cell
 const int BatteryVoltageMaxReset = 13360;  
 
 // Minimum Voltage security
-const int BatteryVoltageMin = 12400; // 12,4v = 3,1v / Cell
+const int BatteryVoltageMin = 12000; // 12,4v = 3,1v / Cell
 
 // Waiting for Min Reset Voltage after reaching Min Voltage (time to re-charge the battery enough to use it)
-const int BatteryVoltageMinReset = 12800; // 12,9  = 3,225v / Cell
+const int BatteryVoltageMinReset = 12200; // 12,9  = 3,225v / Cell
 
 // Minimum operating cell voltage
-const int CellVoltageMin = 310;
+const int CellVoltageMin = 260;
 
 // Maximum operating cell voltage
 const int CellVoltageMax = 360;
@@ -152,6 +159,12 @@ int isfirstrun = 1;
 
 void log(String message, byte buzz, byte buzzperiode = 100);
 
+// clock timer
+struct ts t; 
+
+// SD log
+String dataLogFileName = "logs4.txt";
+const int SdPinSelect = 10;
 
 void setup()
 {
@@ -177,6 +190,19 @@ void setup()
   ChargeRelay.openPin = ChargeRelayOpenPin;
   ChargeRelay.closePin = ChargeRelayClosePin;
   ChargeRelay.statePin = ChargeRelayStatePin;
+
+// i2c clock timer
+  Wire.begin();
+  DS3231_init(DS3231_INTCN);
+  t.hour=12; 
+  t.min=38;
+  t.sec=0;
+  t.mday=8;
+  t.mon=11;
+  t.year=2020;
+ 
+  // update de l'heure
+  // DS3231_set(t);
   
   Serial.begin(19200);
   Bmv.begin(19200); 
@@ -186,6 +212,15 @@ void setup()
 
   ads.begin();
 
+  // sd card
+
+  if (!SD.begin(10)) {
+    Serial.println("SD card initialization failed!");
+    while (1);
+  }
+  
+  Serial.println("card initialized.");
+
 }
  
 void loop() {
@@ -194,10 +229,12 @@ void loop() {
     delay(50);
     bip(50);
     isfirstrun = 0;
+    log(F("Starting process"), 0);   
+
   }
   
   if(isEnabledBMVSerialInfos()) {
-    readBmvData();
+    // readBmvData();
   }
 
   if(RunApplication.shouldRun()) {
@@ -803,6 +840,43 @@ boolean isSOCValid() {
 void log(String message, byte buzz, byte buzzperiode = 100) {
   // TODO
   // trigger alarm and led... 
+
+  DS3231_get(&t);
+File logFile = SD.open(dataLogFileName, FILE_WRITE);
+if (logFile) {
+
+   logFile.print(F("-- "));
+    logFile.print(t.year);
+    logFile.print(F("/"));
+    logFile.print(t.mday);
+    logFile.print(F("/"));
+    logFile.print(t.mon);
+    logFile.print(F(" "));
+    logFile.print(t.hour);
+    logFile.print(F("h"));
+    logFile.print(t.min);
+    logFile.print(F(":"));
+    logFile.println(t.sec);
+    if(buzz) {
+
+    logFile.print(F("ALARME : "));
+      
+    } else {
+      logFile.print(F("ALERTE : "));
+    }
+
+    logFile.println(message);
+// dataString += message;
+
+    Serial.println(F("message écrit"));
+ 
+    logFile.close();
+ 
+  } else {
+     Serial.print(F("error opening "));
+     Serial.println(dataLogFileName);
+  }
+
 
   if(buzz) {
     bip(buzzperiode);
